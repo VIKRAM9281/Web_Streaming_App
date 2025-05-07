@@ -2,7 +2,11 @@ import React, { useEffect, useRef, useState } from 'react';
 import io from 'socket.io-client';
 import './App.css';
 
-const socket = io('https://streamingbackend-eh65.onrender.com'); // Replace with your backend URL
+const socket = io('https://streamingbackend-eh65.onrender.com', {
+  reconnection: true,
+  reconnectionAttempts: Infinity,
+  reconnectionDelay: 1000,
+});
 
 function App() {
   const [roomId, setRoomId] = useState('');
@@ -18,7 +22,7 @@ function App() {
   const remoteVideoRef = useRef(null);
   const peerConnectionRef = useRef(null);
   const localStreamRef = useRef(null);
-
+  const peerConnections = useRef({});
   useEffect(() => {
     // Handle room creation confirmation
     socket.on('room-created', ({ roomId }) => {
@@ -59,8 +63,36 @@ function App() {
     });
 
     // Handle user joined notification
-    socket.on('user-joined', (viewerId) => {
+    socket.on('user-joined',async (viewerId) => {
       setViewers((prev) => [...prev, viewerId]);
+      const peerConnection = new RTCPeerConnection();
+
+      // Add local stream tracks to the peer connection
+      localStreamRef.current.getTracks().forEach(track => {
+        peerConnection.addTrack(track, localStreamRef.current);
+      });
+    
+      // Handle ICE candidates
+      peerConnection.onicecandidate = (event) => {
+        if (event.candidate) {
+          socket.emit('ice-candidate', {
+            target: viewerId,
+            candidate: event.candidate,
+          });
+        }
+      };
+    
+      // Save peer connection
+      peerConnections.current[viewerId] = peerConnection;
+    
+      // Create and send offer
+      const offer = await peerConnection.createOffer();
+      await peerConnection.setLocalDescription(offer);
+    
+      socket.emit('offer', {
+        target: viewerId,
+        sdp: offer,
+      });
     });
 
     // Handle user left notification
@@ -75,28 +107,49 @@ function App() {
 
     // Handle ICE candidates
     socket.on('ice-candidate', ({ candidate, sender }) => {
-      if (sender !== socket.id && peerConnectionRef.current) {
-        peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(candidate));
+      const pc = peerConnections.current[sender];
+      if (pc) {
+        pc.addIceCandidate(new RTCIceCandidate(candidate));
       }
     });
 
     // Handle offer from the host
     socket.on('offer', async ({ sdp, sender }) => {
-      if (sender !== socket.id) {
-        if (peerConnectionRef.current) {
-          await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(sdp));
-          const answer = await peerConnectionRef.current.createAnswer();
-          await peerConnectionRef.current.setLocalDescription(answer);
-
-          socket.emit('answer', { target: sender, sdp: answer });
+      const peerConnection = new RTCPeerConnection();
+    
+      peerConnection.ontrack = (event) => {
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = event.streams[0];
         }
-      }
+      };
+    
+      peerConnection.onicecandidate = (event) => {
+        if (event.candidate) {
+          socket.emit('ice-candidate', {
+            target: sender,
+            candidate: event.candidate,
+          });
+        }
+      };
+    
+      await peerConnection.setRemoteDescription(new RTCSessionDescription(sdp));
+      const answer = await peerConnection.createAnswer();
+      await peerConnection.setLocalDescription(answer);
+    
+      socket.emit('answer', {
+        target: sender,
+        sdp: answer,
+      });
+    
+      peerConnectionRef.current = peerConnection;
     });
+    
 
     // Handle answer from the viewer
     socket.on('answer', async ({ sdp, sender }) => {
-      if (sender !== socket.id && peerConnectionRef.current) {
-        await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(sdp));
+      const pc = peerConnections.current[sender];
+      if (pc) {
+        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
       }
     });
 
