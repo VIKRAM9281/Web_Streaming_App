@@ -1,0 +1,86 @@
+/* App.css */
+
+body {
+  margin: 0;
+  font-family: 'Segoe UI', sans-serif;
+  background-color: #f7f9fc;
+  color: #333;
+}
+
+.App {
+  max-width: 800px;
+  margin: auto;
+  padding: 2rem;
+}
+
+h1 {
+  text-align: center;
+  color: #222;
+  margin-bottom: 2rem;
+}
+
+.input {
+  width: 100%;
+  padding: 0.75rem;
+  font-size: 1rem;
+  margin-bottom: 1rem;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+}
+
+.button-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+button {
+  flex: 1;
+  padding: 0.75rem;
+  font-size: 1rem;
+  background-color: #007bff;
+  border: none;
+  color: white;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+button:hover {
+  background-color: #0056b3;
+}
+
+button:disabled {
+  background-color: #ccc;
+  cursor: not-allowed;
+}
+
+.error {
+  color: red;
+  margin-bottom: 1rem;
+}
+
+.video {
+  width: 100%;
+  max-height: 360px;
+  border-radius: 10px;
+  margin: 1rem 0;
+  background-color: #000;
+}
+
+.stream-section {
+  margin-top: 2rem;
+}
+
+ul {
+  padding: 0;
+  list-style-type: none;
+}
+
+ul li {
+  background: #e9ecef;
+  margin: 0.25rem 0;
+  padding: 0.5rem;
+  border-radius: 6px;
+}
+ 
