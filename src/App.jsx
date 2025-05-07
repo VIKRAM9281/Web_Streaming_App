@@ -2,11 +2,23 @@ import React, { useEffect, useRef, useState } from 'react';
 import io from 'socket.io-client';
 import './App.css';
 
+// Socket connection
 const socket = io('https://streamingbackend-eh65.onrender.com', {
   reconnection: true,
   reconnectionAttempts: Infinity,
   reconnectionDelay: 1000,
 });
+
+// STUN/TURN server configuration
+const iceServers = {
+  iceServers: [
+    {
+      urls: 'turn:coturn.streamalong.live:3478?transport=udp',
+      username: 'vikram',
+      credential: 'vikram',
+    },
+  ],
+};
 
 function App() {
   const [roomId, setRoomId] = useState('');
@@ -23,8 +35,8 @@ function App() {
   const peerConnectionRef = useRef(null);
   const localStreamRef = useRef(null);
   const peerConnections = useRef({});
+
   useEffect(() => {
-    // Handle room creation confirmation
     socket.on('room-created', ({ roomId }) => {
       console.log(`Room ${roomId} created`);
       setJoined(true);
@@ -32,7 +44,6 @@ function App() {
       setHostId(socket.id);
     });
 
-    // Handle room join confirmation
     socket.on('room-joined', ({ roomId, hostId, isHostStreaming, viewerCount }) => {
       console.log(`Joined room ${roomId}`);
       setJoined(true);
@@ -42,37 +53,20 @@ function App() {
       setIsStreaming(isHostStreaming);
     });
 
-    // Handle room full error
-    socket.on('room-full', () => {
-      setError('Room is full. Cannot join.');
-    });
+    socket.on('room-full', () => setError('Room is full. Cannot join.'));
+    socket.on('invalid-room', () => setError('Invalid room ID.'));
+    socket.on('room-exists', () => setError('Room already exists.'));
+    socket.on('room-info', ({ viewerCount }) => setViewerCount(viewerCount));
 
-    // Handle invalid room error
-    socket.on('invalid-room', () => {
-      setError('Invalid room ID.');
-    });
-
-    // Handle room already exists error
-    socket.on('room-exists', () => {
-      setError('Room already exists.');
-    });
-
-    // Handle room info updates
-    socket.on('room-info', ({ viewerCount }) => {
-      setViewerCount(viewerCount);
-    });
-
-    // Handle user joined notification
-    socket.on('user-joined',async (viewerId) => {
+    socket.on('user-joined', async (viewerId) => {
       setViewers((prev) => [...prev, viewerId]);
-      const peerConnection = new RTCPeerConnection();
 
-      // Add local stream tracks to the peer connection
+      const peerConnection = new RTCPeerConnection(iceServers);
+
       localStreamRef.current.getTracks().forEach(track => {
         peerConnection.addTrack(track, localStreamRef.current);
       });
-    
-      // Handle ICE candidates
+
       peerConnection.onicecandidate = (event) => {
         if (event.candidate) {
           socket.emit('ice-candidate', {
@@ -81,48 +75,44 @@ function App() {
           });
         }
       };
-    
-      // Save peer connection
+
       peerConnections.current[viewerId] = peerConnection;
-    
-      // Create and send offer
+
       const offer = await peerConnection.createOffer();
       await peerConnection.setLocalDescription(offer);
-    
+
       socket.emit('offer', {
         target: viewerId,
         sdp: offer,
       });
     });
 
-    // Handle user left notification
     socket.on('user-left', (viewerId) => {
       setViewers((prev) => prev.filter((id) => id !== viewerId));
+      if (peerConnections.current[viewerId]) {
+        peerConnections.current[viewerId].close();
+        delete peerConnections.current[viewerId];
+      }
     });
 
-    // Handle host started streaming
-    socket.on('host-started-streaming', () => {
-      setIsStreaming(true);
-    });
+    socket.on('host-started-streaming', () => setIsStreaming(true));
 
-    // Handle ICE candidates
     socket.on('ice-candidate', ({ candidate, sender }) => {
-      const pc = peerConnections.current[sender];
-      if (pc) {
+      const pc = peerConnections.current[sender] || peerConnectionRef.current;
+      if (pc && candidate) {
         pc.addIceCandidate(new RTCIceCandidate(candidate));
       }
     });
 
-    // Handle offer from the host
     socket.on('offer', async ({ sdp, sender }) => {
-      const peerConnection = new RTCPeerConnection();
-    
+      const peerConnection = new RTCPeerConnection(iceServers);
+
       peerConnection.ontrack = (event) => {
         if (remoteVideoRef.current) {
           remoteVideoRef.current.srcObject = event.streams[0];
         }
       };
-    
+
       peerConnection.onicecandidate = (event) => {
         if (event.candidate) {
           socket.emit('ice-candidate', {
@@ -131,21 +121,19 @@ function App() {
           });
         }
       };
-    
+
       await peerConnection.setRemoteDescription(new RTCSessionDescription(sdp));
       const answer = await peerConnection.createAnswer();
       await peerConnection.setLocalDescription(answer);
-    
+
       socket.emit('answer', {
         target: sender,
         sdp: answer,
       });
-    
+
       peerConnectionRef.current = peerConnection;
     });
-    
 
-    // Handle answer from the viewer
     socket.on('answer', async ({ sdp, sender }) => {
       const pc = peerConnections.current[sender];
       if (pc) {
@@ -153,21 +141,18 @@ function App() {
       }
     });
 
-    // Handle remote stream
     socket.on('remote-stream', (stream) => {
       if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = stream;
       }
     });
 
-    // Handle host left
     socket.on('host-left', () => {
       setError('Host has left the room.');
       setJoined(false);
       setIsStreaming(false);
     });
 
-    // Handle room closed
     socket.on('room-closed', () => {
       setError('Room has been closed.');
       setJoined(false);
@@ -215,15 +200,12 @@ function App() {
       localVideoRef.current.srcObject = stream;
       localStreamRef.current = stream;
 
-      // Initialize peer connection
-      peerConnectionRef.current = new RTCPeerConnection();
+      peerConnectionRef.current = new RTCPeerConnection(iceServers);
 
-      // Add tracks to peer connection
       stream.getTracks().forEach((track) => {
         peerConnectionRef.current.addTrack(track, stream);
       });
 
-      // Handle ICE candidates
       peerConnectionRef.current.onicecandidate = (event) => {
         if (event.candidate) {
           socket.emit('ice-candidate', {
@@ -233,22 +215,18 @@ function App() {
         }
       };
 
-      // Handle remote stream
       peerConnectionRef.current.ontrack = (event) => {
-        socket.emit('remote-stream', event.streams[0]); // Send stream to viewers
+        socket.emit('remote-stream', event.streams[0]);
       };
 
-      // Create offer
       const offer = await peerConnectionRef.current.createOffer();
       await peerConnectionRef.current.setLocalDescription(offer);
 
-      // Send offer to server
       socket.emit('offer', {
         target: hostId,
         sdp: offer,
       });
 
-      // Notify server that host started streaming
       socket.emit('host-streaming', roomId);
     } catch (err) {
       console.error('Error starting stream:', err);
@@ -262,12 +240,17 @@ function App() {
     setIsStreaming(false);
     setViewers([]);
     setRoomId('');
-    if (localVideoRef.current && localVideoRef.current.srcObject) {
+
+    if (localVideoRef.current?.srcObject) {
       localVideoRef.current.srcObject.getTracks().forEach((track) => track.stop());
     }
-    if (remoteVideoRef.current && remoteVideoRef.current.srcObject) {
+
+    if (remoteVideoRef.current?.srcObject) {
       remoteVideoRef.current.srcObject.getTracks().forEach((track) => track.stop());
     }
+
+    Object.values(peerConnections.current).forEach((pc) => pc.close());
+    peerConnections.current = {};
   };
 
   return (
