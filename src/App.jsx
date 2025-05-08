@@ -520,7 +520,7 @@ function App() {
             ) : (
               <div className="viewer-controls">
                 <div className="control-row">
-                  <button className="control-button" onClick={togglemute}>
+                  <button className="control-button" onClick={toggleMute}>
                     {isMuted ? '🔇 Unmute' : '🔈 Mute'}
                   </button>
                   <button
