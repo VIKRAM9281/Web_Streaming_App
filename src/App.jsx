@@ -16,9 +16,7 @@ const iceServers = {
       urls: 'turn:coturn.streamalong.live:3478?transport=udp',
       username: 'vikram',
       credential: 'vikram',
-    },
-    { urls: 'stun:stun.l.google.com:19302' },
-  ],
+    }],
 };
 
 function App() {
