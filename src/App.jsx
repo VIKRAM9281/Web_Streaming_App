@@ -32,7 +32,7 @@ function App() {
   const [reactions, setReactions] = useState([]);
   const [streamQuality, setStreamQuality] = useState('720p');
   const [viewerList, setViewerList] = useState([]);
-  const [streamStats, setStreamStats] = useState({ duration: 0, peakViewers: 0 });
+  const [streamStats, setStreamStats] = useState({ duration: 0, peerViewers: 0 });
   const [hasRequestedStream, setHasRequestedStream] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [remoteStreams, setRemoteStreams] = useState([]);
@@ -44,174 +44,54 @@ function App() {
   const peerConnections = useRef({});
   const chatScrollRef = useRef(null);
 
-  // Start audio stream (and video for host)
   const startAudioStream = async () => {
-    if (isStreaming) {
-      console.log('Stream already active, skipping startAudioStream');
-      return;
-    }
     try {
       const constraints = {
         audio: true,
         video: isHost ? { width: streamQuality === '720p' ? 1280 : 640, height: streamQuality === '720p' ? 720 : 360 } : false,
       };
-      console.log('Requesting media with constraints:', constraints);
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      console.log('Got stream:', stream);
-
-      if (isHost && localVideoRef.current) {
-        console.log('Assigning stream to local video element');
-        localVideoRef.current.srcObject = stream;
-      }
       localStreamRef.current = stream;
 
-      // Create WebRTC peer connection
-      peerConnectionRef.current = new RTCPeerConnection(iceServers);
-      console.log('Created peer connection:', peerConnectionRef.current);
+      if (isHost && localVideoRef.current) {
+        localVideoRef.current.srcObject = stream;
+      }
 
+      peerConnectionRef.current = new RTCPeerConnection(iceServers);
       stream.getTracks().forEach(track => {
-        console.log('Adding track:', track);
         peerConnectionRef.current.addTrack(track, stream);
       });
 
-      // Handle ICE candidates
       peerConnectionRef.current.onicecandidate = (event) => {
         if (event.candidate) {
-          console.log('ICE candidate generated:', event.candidate);
-          viewerList.forEach(viewerId => {
-            if (viewerId !== socket.id) {
-              socket.emit('ice-candidate', { target: viewerId, candidate: event.candidate });
-            }
-          });
-        }
-      };
-
-      // Monitor connection state
-      peerConnectionRef.current.onconnectionstatechange = () => {
-        console.log('Peer connection state:', peerConnectionRef.current.connectionState);
-        if (peerConnectionRef.current.connectionState === 'failed') {
-          setError('WebRTC connection failed. Please try again.');
-          stopStreaming();
+          socket.emit('ice-candidate', { target: 'all', candidate: event.candidate });
         }
       };
 
       if (isHost) {
-        console.log('Emitting host-streaming for room:', roomId);
         socket.emit('host-streaming', roomId);
+        setIsStreaming(true);
+        console.log('Host started streaming');
       }
-      setIsStreaming(true);
     } catch (err) {
-      console.error('Audio stream error:', err.name, err.message);
-      setError(`Failed to start audio stream: ${err.message}`);
+      console.error('Audio stream error:', err);
+      setError('Failed to start audio stream. Please check microphone permissions.');
     }
   };
 
-  // Start video stream for approved viewers or host
-  const startVideoStream = async () => {
-    if (isStreaming) {
-      console.log('Stream already active, skipping startVideoStream');
-      return;
-    }
-    try {
-      const constraints = {
-        video: { width: streamQuality === '720p' ? 1280 : 640, height: streamQuality === '720p' ? 720 : 360 },
-        audio: true,
-      };
-      console.log('Requesting video stream with constraints:', constraints);
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      if (localVideoRef.current) {
-        console.log('Assigning video stream to local video element');
-        localVideoRef.current.srcObject = stream;
-      }
-      localStreamRef.current = stream;
-
-      peerConnectionRef.current = new RTCPeerConnection(iceServers);
-      stream.getTracks().forEach(track => {
-        peerConnectionRef.current.addTrack(track, stream);
-      });
-
-      peerConnectionRef.current.onicecandidate = (event) => {
-        if (event.candidate) {
-          viewerList.forEach(viewerId => {
-            if (viewerId !== socket.id) {
-              socket.emit('ice-candidate', { target: viewerId, candidate: event.candidate });
-            }
-          });
-        }
-      };
-
-      peerConnectionRef.current.onconnectionstatechange = () => {
-        console.log('Peer connection state:', peerConnectionRef.current.connectionState);
-        if (peerConnectionRef.current.connectionState === 'failed') {
-          setError('WebRTC connection failed. Please try again.');
-          stopStreaming();
-        }
-      };
-
-      console.log('Emitting user-started-streaming for room:', roomId);
-      socket.emit(isHost ? 'host-streaming' : 'user-started-streaming', { roomId, streamerId: socket.id });
-      setIsStreaming(true);
-    } catch (err) {
-      console.error('Video stream error:', err.name, err.message);
-      setError(`Failed to start video stream: ${err.message}`);
-      setHasRequestedStream(false);
-    }
-  };
-
-  // Stop streaming
-  const stopStreaming = () => {
-    console.log('Stopping stream');
-    if (peerConnectionRef.current) {
-      console.log('Closing peer connection');
-      peerConnectionRef.current.close();
-      peerConnectionRef.current = null;
-    }
-    if (localStreamRef.current) {
-      console.log('Stopping media tracks');
-      localStreamRef.current.getTracks().forEach(track => track.stop());
-      localStreamRef.current = null;
-    }
-    if (localVideoRef.current) {
-      console.log('Clearing local video element');
-      localVideoRef.current.srcObject = null;
-    }
-    Object.values(peerConnections.current).forEach(pc => {
-      console.log('Closing peer connection for viewer');
-      pc.close();
-    });
-    peerConnections.current = {};
-    setIsStreaming(false);
-    if (isHost) {
-      console.log('Emitting stop-streaming for room:', roomId);
-      socket.emit('stop-streaming', roomId);
-    }
-  };
-
-  // Socket and WebRTC event handlers
   useEffect(() => {
-    // Handle socket reconnection
-    const handleReconnect = () => {
-      console.log('Reconnected to server');
-      if (roomId && joined) {
-        socket.emit(isHost ? 'create-room' : 'join-room', roomId);
-      }
-    };
-
-    // Socket event handlers
     const handleRoomCreated = () => {
-      console.log('Room created:', roomId);
       setJoined(true);
       setIsHost(true);
       setHostId(socket.id);
-      setViewerCount(1); // Host is the first viewer
+      startAudioStream();
     };
 
     const handleRoomJoined = ({ hostId, isHostStreaming, viewerCount, viewerList, messages }) => {
-      console.log('Room joined data:', { hostId, isHostStreaming, viewerCount, viewerList, messages });
       setJoined(true);
       setIsHost(false);
       setHostId(hostId);
-      setViewerCount(Number(viewerCount) || 0);
+      setViewerCount(viewerCount);
       setViewerList(viewerList || []);
       setIsStreaming(isHostStreaming);
       setChatMessages(messages || []);
@@ -219,13 +99,9 @@ function App() {
     };
 
     const handleRoomInfo = ({ viewerCount, viewerList }) => {
-      console.log('Room info data:', { viewerCount, viewerList });
-      setViewerCount(Number(viewerCount) || 0);
+      setViewerCount(viewerCount);
       setViewerList(viewerList || []);
-      setStreamStats(prev => ({
-        ...prev,
-        peakViewers: Math.max(Number(prev.peakViewers) || 0, Number(viewerCount) || 0),
-      }));
+      setStreamStats(prev => ({ ...prev, peakViewers: Math.max(prev.peakViewers || 0, viewerCount) }));
     };
 
     const handleUserJoined = async (viewerId) => {
@@ -236,6 +112,7 @@ function App() {
 
       try {
         const peerConnection = new RTCPeerConnection(iceServers);
+
         localStreamRef.current.getTracks().forEach(track => {
           peerConnection.addTrack(track, localStreamRef.current);
         });
@@ -272,7 +149,6 @@ function App() {
     };
 
     const handleUserLeft = (viewerId) => {
-      console.log('User left:', viewerId);
       setViewerList(prev => prev.filter(id => id !== viewerId));
       setApprovedStreamers(prev => prev.filter(s => s !== viewerId));
       setRemoteStreams(prev => prev.filter(s => s.id !== viewerId));
@@ -375,8 +251,6 @@ function App() {
       setApprovedStreamers(prev => [...new Set([...prev, streamerId])]);
     };
 
-    // Register socket event listeners
-    socket.on('reconnect', handleReconnect);
     socket.on('room-created', handleRoomCreated);
     socket.on('room-joined', handleRoomJoined);
     socket.on('room-full', () => setError('Room is full. Cannot join.'));
@@ -407,18 +281,14 @@ function App() {
       leaveRoom();
     });
 
-    // Stream stats interval
     const statsInterval = setInterval(() => {
       if (isStreaming) {
         setStreamStats(prev => ({ ...prev, duration: prev.duration + 1 }));
       }
     }, 1000);
 
-    // Cleanup on unmount
     return () => {
-      console.log('Cleaning up component');
       clearInterval(statsInterval);
-      socket.off('reconnect', handleReconnect);
       socket.off('room-created', handleRoomCreated);
       socket.off('room-joined', handleRoomJoined);
       socket.off('room-full');
@@ -431,7 +301,7 @@ function App() {
       socket.off('host-stopped-streaming');
       socket.off('user-started-streaming', handleUserStartedStreaming);
       socket.off('ice-candidate', handleIceCandidate);
-      socket.off('offer', handleOffer);
+      socket.off('.filestack', handleOffer);
       socket.off('answer', handleAnswer);
       socket.off('stream-request', handleStreamRequest);
       socket.off('stream-permission', handleStreamPermission);
@@ -440,10 +310,19 @@ function App() {
       socket.off('host-left');
       socket.off('room-closed');
 
-      // Clean up WebRTC resources
-      stopStreaming();
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach(track => track.stop());
+        localStreamRef.current = null;
+      }
+      if (peerConnectionRef.current) {
+        peerConnectionRef.current.close();
+        peerConnectionRef.current = null;
+      }
+      Object.values(peerConnections.current).forEach(pc => pc.close());
+      peerConnections.current = {};
     };
-  }, [isHost, joined, hostId, roomId, viewerList, isStreaming]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isStreaming, isHost, hostId, roomId, viewerList]);
 
   const createRoom = () => {
     if (roomId.trim() === '') {
@@ -459,6 +338,56 @@ function App() {
       return;
     }
     socket.emit('join-room', roomId);
+  };
+
+  const startVideoStream = async () => {
+    try {
+      const constraints = {
+        video: { width: streamQuality === '720p' ? 1280 : 640, height: streamQuality === '720p' ? 720 : 360 },
+        audio: true,
+      };
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = stream;
+      }
+      localStreamRef.current = stream;
+
+      peerConnectionRef.current = new RTCPeerConnection(iceServers);
+      stream.getTracks().forEach(track => {
+        peerConnectionRef.current.addTrack(track, stream);
+      });
+
+      peerConnectionRef.current.onicecandidate = (event) => {
+        if (event.candidate) {
+          socket.emit('ice-candidate', { target: 'all', candidate: event.candidate });
+        }
+      };
+
+      socket.emit('user-started-streaming', { roomId, streamerId: socket.id });
+      setIsStreaming(true);
+    } catch (err) {
+      console.error('Video stream error:', err);
+      setError('Failed to start video stream. Please check camera/microphone permissions.');
+      setHasRequestedStream(false);
+    }
+  };
+
+  const stopStreaming = () => {
+    if (peerConnectionRef.current) {
+      peerConnectionRef.current.close();
+      peerConnectionRef.current = null;
+    }
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach(track => track.stop());
+      localStreamRef.current = null;
+    }
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = null;
+    }
+    setIsStreaming(false);
+    if (isHost) {
+      socket.emit('stop-streaming', roomId);
+    }
   };
 
   const toggleMute = () => {
@@ -494,9 +423,7 @@ function App() {
   };
 
   const leaveRoom = () => {
-    console.log('Leaving room:', roomId);
     socket.emit('leave-room');
-    stopStreaming();
     setJoined(false);
     setIsHost(false);
     setIsStreaming(false);
@@ -509,7 +436,16 @@ function App() {
     setReactions([]);
     setStreamStats({ duration: 0, peakViewers: 0 });
     setHasRequestedStream(false);
-    setIsMuted(false);
+
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach(track => track.stop());
+      localStreamRef.current = null;
+    }
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = null;
+    }
+    Object.values(peerConnections.current).forEach(pc => pc.close());
+    peerConnections.current = {};
   };
 
   return (
@@ -584,7 +520,7 @@ function App() {
             ) : (
               <div className="viewer-controls">
                 <div className="control-row">
-                  <button className="control-button" onClick={toggleMute}>
+                  <button className="control-button" onClick={togglemute}>
                     {isMuted ? '🔇 Unmute' : '🔈 Mute'}
                   </button>
                   <button
