@@ -48,6 +48,10 @@ function App() {
 
   // Start audio stream (and video for host)
   const startAudioStream = async () => {
+    if (isStreaming) {
+      console.log('Stream already active, skipping startAudioStream');
+      return;
+    }
     try {
       const constraints = {
         audio: true,
@@ -89,22 +93,27 @@ function App() {
         console.log('Peer connection state:', peerConnectionRef.current.connectionState);
         if (peerConnectionRef.current.connectionState === 'failed') {
           setError('WebRTC connection failed. Please try again.');
+          stopStreaming();
         }
       };
 
       if (isHost) {
         console.log('Emitting host-streaming for room:', roomId);
         socket.emit('host-streaming', roomId);
-        setIsStreaming(true);
       }
+      setIsStreaming(true);
     } catch (err) {
       console.error('Audio stream error:', err.name, err.message);
       setError(`Failed to start audio stream: ${err.message}`);
     }
   };
 
-  // Start video stream for approved viewers
+  // Start video stream for approved viewers or host
   const startVideoStream = async () => {
+    if (isStreaming) {
+      console.log('Stream already active, skipping startVideoStream');
+      return;
+    }
     try {
       const constraints = {
         video: { width: streamQuality === '720p' ? 1280 : 640, height: streamQuality === '720p' ? 720 : 360 },
@@ -133,8 +142,16 @@ function App() {
         }
       };
 
+      peerConnectionRef.current.onconnectionstatechange = () => {
+        console.log('Peer connection state:', peerConnectionRef.current.connectionState);
+        if (peerConnectionRef.current.connectionState === 'failed') {
+          setError('WebRTC connection failed. Please try again.');
+          stopStreaming();
+        }
+      };
+
       console.log('Emitting user-started-streaming for room:', roomId);
-      socket.emit('user-started-streaming', { roomId, streamerId: socket.id });
+      socket.emit(isHost ? 'host-streaming' : 'user-started-streaming', { roomId, streamerId: socket.id });
       setIsStreaming(true);
     } catch (err) {
       console.error('Video stream error:', err.name, err.message);
@@ -143,13 +160,37 @@ function App() {
     }
   };
 
+  // Stop streaming
+  const stopStreaming = () => {
+    console.log('Stopping stream');
+    if (peerConnectionRef.current) {
+      console.log('Closing peer connection');
+      peerConnectionRef.current.close();
+      peerConnectionRef.current = null;
+    }
+    if (localStreamRef.current) {
+      console.log('Stopping media tracks');
+      localStreamRef.current.getTracks().forEach(track => track.stop());
+      localStreamRef.current = null;
+    }
+    if (localVideoRef.current) {
+      console.log('Clearing local video element');
+      localVideoRef.current.srcObject = null;
+    }
+    Object.values(peerConnections.current).forEach(pc => {
+      console.log('Closing peer connection for viewer');
+      pc.close();
+    });
+    peerConnections.current = {};
+    setIsStreaming(false);
+    if (isHost) {
+      console.log('Emitting stop-streaming for room:', roomId);
+      socket.emit('stop-streaming', roomId);
+    }
+  };
+
   // Socket and WebRTC event handlers
   useEffect(() => {
-    // Start stream when host joins
-    if (isHost && joined && !isStreaming) {
-      startAudioStream();
-    }
-
     // Handle socket reconnection
     const handleReconnect = () => {
       console.log('Reconnected to server');
@@ -377,6 +418,7 @@ function App() {
 
     // Cleanup on unmount
     return () => {
+      console.log('Cleaning up component');
       clearInterval(statsInterval);
       socket.off('reconnect', handleReconnect);
       socket.off('room-created', handleRoomCreated);
@@ -401,18 +443,9 @@ function App() {
       socket.off('room-closed');
 
       // Clean up WebRTC resources
-      if (localStreamRef.current) {
-        localStreamRef.current.getTracks().forEach(track => track.stop());
-        localStreamRef.current = null;
-      }
-      if (peerConnectionRef.current) {
-        peerConnectionRef.current.close();
-        peerConnectionRef.current = null;
-      }
-      Object.values(peerConnections.current).forEach(pc => pc.close());
-      peerConnections.current = {};
+      stopStreaming();
     };
-  }, [isHost, joined, isStreaming, hostId, roomId, viewerList]);
+  }, [isHost, joined, hostId, roomId, viewerList, isStreaming]);
 
   const createRoom = () => {
     if (roomId.trim() === '') {
@@ -428,24 +461,6 @@ function App() {
       return;
     }
     socket.emit('join-room', roomId);
-  };
-
-  const stopStreaming = () => {
-    if (peerConnectionRef.current) {
-      peerConnectionRef.current.close();
-      peerConnectionRef.current = null;
-    }
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach(track => track.stop());
-      localStreamRef.current = null;
-    }
-    if (localVideoRef.current) {
-      localVideoRef.current.srcObject = null;
-    }
-    setIsStreaming(false);
-    if (isHost) {
-      socket.emit('stop-streaming', roomId);
-    }
   };
 
   const toggleMute = () => {
@@ -481,7 +496,9 @@ function App() {
   };
 
   const leaveRoom = () => {
+    console.log('Leaving room:', roomId);
     socket.emit('leave-room');
+    stopStreaming();
     setJoined(false);
     setIsHost(false);
     setIsStreaming(false);
@@ -494,20 +511,7 @@ function App() {
     setReactions([]);
     setStreamStats({ duration: 0, peakViewers: 0 });
     setHasRequestedStream(false);
-
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach(track => track.stop());
-      localStreamRef.current = null;
-    }
-    if (localVideoRef.current) {
-      localVideoRef.current.srcObject = null;
-    }
-    if (peerConnectionRef.current) {
-      peerConnectionRef.current.close();
-      peerConnectionRef.current = null;
-    }
-    Object.values(peerConnections.current).forEach(pc => pc.close());
-    peerConnections.current = {};
+    setIsMuted(false);
   };
 
   return (
