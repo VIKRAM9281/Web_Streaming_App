@@ -29,18 +29,15 @@ const App = () => {
   const [hostId, setHostId] = useState('');
   const [viewerCount, setViewerCount] = useState(0);
   const [isStreaming, setIsStreaming] = useState(false);
-  const [isViewerStreaming, setIsViewerStreaming] = useState(false);
   const [error, setError] = useState('');
   const [isMuted, setIsMuted] = useState(false);
   const [isFrontCamera, setIsFrontCamera] = useState(true);
   const [loading, setLoading] = useState(false);
-  const [hasRequestedStream, setHasRequestedStream] = useState(false);
   const [localStream, setLocalStream] = useState(null);
   const [remoteStreams, setRemoteStreams] = useState({});
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
   const [users, setUsers] = useState({});
-  const [hasCamera, setHasCamera] = useState(true);
   const [hasMicrophone, setHasMicrophone] = useState(true);
   const [isRequestingPermissions, setIsRequestingPermissions] = useState(false);
 
@@ -55,60 +52,48 @@ const App = () => {
     setIsRequestingPermissions(true);
 
     try {
-      // Try to get both video and audio
-      let stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      let stream;
+      if (isHost) {
+        // Host: Request both video and audio
+        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        setHasMicrophone(true);
+      } else {
+        // Viewer: Request audio only
+        stream = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
+        setHasMicrophone(true);
+      }
       setLocalStream(stream);
       localStreamRef.current = stream;
-      setHasCamera(true);
-      setHasMicrophone(true);
-      await setVideoSource(stream);
+      if (isHost && localVideoRef.current) {
+        localVideoRef.current.srcObject = stream;
+        if (!isPlayingRef.current) {
+          isPlayingRef.current = true;
+          try {
+            await localVideoRef.current.play();
+          } catch (err) {
+            if (err.name === 'AbortError') {
+              console.warn('Local video play aborted:', err);
+            } else {
+              console.error('Local video play error:', err);
+            }
+          } finally {
+            isPlayingRef.current = false;
+          }
+        }
+      }
       return stream;
     } catch (err) {
-      console.error('Initial permission error:', err);
+      console.error('Permission error:', err);
       if (err.name === 'NotFoundError') {
-        try {
-          // Fallback to audio-only
-          let stream = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
-          setLocalStream(stream);
-          localStreamRef.current = stream;
-          setHasCamera(false);
-          setHasMicrophone(true);
-          setError('No camera found. Joined with audio only.');
-          await setVideoSource(stream);
-          return stream;
-        } catch (audioErr) {
-          console.error('Audio-only permission error:', audioErr);
-          setHasCamera(false);
-          setHasMicrophone(false);
-          setError('No camera or microphone found. You can still use text chat and view streams.');
-          return null;
-        }
+        setHasMicrophone(false);
+        setError(isHost ? 'Camera and microphone required for host.' : 'No microphone found. You can use text chat and view streams.');
+        return null;
       } else {
-        setError('Camera and microphone permissions are required. Please allow access.');
+        setError('Permissions required. Please allow access to ' + (isHost ? 'camera and microphone.' : 'microphone.'));
         return null;
       }
     } finally {
       setIsRequestingPermissions(false);
-    }
-  };
-
-  const setVideoSource = async (stream) => {
-    if (localVideoRef.current && stream) {
-      localVideoRef.current.srcObject = stream;
-      if (!isPlayingRef.current) {
-        isPlayingRef.current = true;
-        try {
-          await localVideoRef.current.play();
-        } catch (err) {
-          if (err.name === 'AbortError') {
-            console.warn('Video play aborted due to new load request:', err);
-          } else {
-            console.error('Local video play error:', err);
-          }
-        } finally {
-          isPlayingRef.current = false;
-        }
-      }
     }
   };
 
@@ -122,7 +107,7 @@ const App = () => {
       requestPermissions();
     });
 
-    socket.on('room-joined',async ({ roomId, hostId, viewerCount, isHostStreaming, users }) => {
+    socket.on('room-joined', ({ roomId, hostId, viewerCount, isHostStreaming, users }) => {
       console.log('Room joined:', roomId);
       setJoined(true);
       setIsHost(false);
@@ -131,7 +116,7 @@ const App = () => {
       setIsStreaming(isHostStreaming);
       setUsers(users);
       setLoading(false);
-      await requestPermissions();
+      requestPermissions();
     });
 
     socket.on('room-full', () => {
@@ -278,17 +263,6 @@ const App = () => {
       setMessages(prev => [...prev, { sender, message }]);
     });
 
-    socket.on('stream-permission', ({ allowed }) => {
-      if (allowed) {
-        startStreaming();
-        setHasRequestedStream(false);
-        setIsViewerStreaming(true);
-      } else {
-        setError('Streaming permission denied by host.');
-        setHasRequestedStream(false);
-      }
-    });
-
     return () => {
       socket.removeAllListeners();
     };
@@ -318,23 +292,13 @@ const App = () => {
     socket.emit('join-room', { roomId, userName });
   };
 
-  const requestStreamPermission = () => {
-    if (!hasCamera) {
-      setError('Cannot stream: No camera detected.');
-      return;
-    }
-    socket.emit('stream-request', { roomId, viewerId: socket.id });
-    setHasRequestedStream(true);
-  };
-
   const startStreaming = async () => {
-    if (!localStreamRef.current) {
-      const stream = await requestPermissions();
-      if (!stream) return;
-    }
+    if (!isHost) return;
+    const stream = await requestPermissions();
+    if (!stream) return;
     const peerConnection = new RTCPeerConnection(iceServers);
-    localStreamRef.current.getTracks().forEach(track => {
-      peerConnection.addTrack(track, localStreamRef.current);
+    stream.getTracks().forEach(track => {
+      peerConnection.addTrack(track, stream);
     });
     peerConnection.onicecandidate = (event) => {
       if (event.candidate) {
@@ -342,13 +306,12 @@ const App = () => {
       }
     };
     peerConnections.current[hostId] = peerConnection;
-    if (isHost) {
-      socket.emit('host-streaming', roomId);
-      setIsStreaming(true);
-    }
+    socket.emit('host-streaming', roomId);
+    setIsStreaming(true);
   };
 
   const stopStreaming = () => {
+    if (!isHost) return;
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach(track => track.stop());
       setLocalStream(null);
@@ -357,7 +320,6 @@ const App = () => {
     Object.values(peerConnections.current).forEach(pc => pc.close());
     peerConnections.current = {};
     setIsStreaming(false);
-    setIsViewerStreaming(false);
     socket.emit('stop-streaming', roomId);
   };
 
@@ -365,18 +327,16 @@ const App = () => {
     socket.emit('leave-room');
     setJoined(false);
     setIsStreaming(false);
-    setIsViewerStreaming(false);
     setRoomId('');
     setUserName('');
     setError('');
+    setHasMicrophone(true);
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach(track => track.stop());
       setLocalStream(null);
       localStreamRef.current = null;
     }
     setRemoteStreams({});
-    setHasCamera(true);
-    setHasMicrophone(true);
     Object.values(peerConnections.current).forEach(pc => pc.close());
     peerConnections.current = {};
   };
@@ -400,36 +360,51 @@ const App = () => {
   };
 
   const switchCamera = async () => {
-    if (localStreamRef.current) {
-      const videoTrack = localStreamRef.current.getVideoTracks()[0];
-      if (videoTrack) {
-        videoTrack.stop();
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const videoDevices = devices.filter(device => device.kind === 'videoinput');
-        const currentDeviceId = videoTrack.getSettings().deviceId;
-        const nextDevice = videoDevices.find(device => device.deviceId !== currentDeviceId) || videoDevices[0];
+    if (!isHost || !localStreamRef.current) return;
+    const videoTrack = localStreamRef.current.getVideoTracks()[0];
+    if (videoTrack) {
+      videoTrack.stop();
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoDevices = devices.filter(device => device.kind === 'videoinput');
+      const currentDeviceId = videoTrack.getSettings().deviceId;
+      const nextDevice = videoDevices.find(device => device.deviceId !== currentDeviceId) || videoDevices[0];
 
-        try {
-          const newStream = await navigator.mediaDevices.getUserMedia({
-            video: { deviceId: nextDevice.deviceId },
-            audio: true,
-          });
-          const newVideoTrack = newStream.getVideoTracks()[0];
-          localStreamRef.current.removeTrack(videoTrack);
-          localStreamRef.current.addTrack(newVideoTrack);
-          setLocalStream(localStreamRef.current);
-          await setVideoSource(localStreamRef.current);
-          setIsFrontCamera(prev => !prev);
-          Object.values(peerConnections.current).forEach(pc => {
-            const sender = pc.getSenders().find(s => s.track.kind === 'video');
-            if (sender) {
-              sender.replaceTrack(newVideoTrack);
+      try {
+        const newStream = await navigator.mediaDevices.getUserMedia({
+          video: { deviceId: nextDevice.deviceId },
+          audio: true,
+        });
+        const newVideoTrack = newStream.getVideoTracks()[0];
+        localStreamRef.current.removeTrack(videoTrack);
+        localStreamRef.current.addTrack(newVideoTrack);
+        setLocalStream(localStreamRef.current);
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = localStreamRef.current;
+          if (!isPlayingRef.current) {
+            isPlayingRef.current = true;
+            try {
+              await localVideoRef.current.play();
+            } catch (err) {
+              if (err.name === 'AbortError') {
+                console.warn('Local video play aborted:', err);
+              } else {
+                console.error('Local video play error:', err);
+              }
+            } finally {
+              isPlayingRef.current = false;
             }
-          });
-        } catch (err) {
-          console.error('Switch camera error:', err);
-          setError('Failed to switch camera.');
+          }
         }
+        setIsFrontCamera(prev => !prev);
+        Object.values(peerConnections.current).forEach(pc => {
+          const sender = pc.getSenders().find(s => s.track.kind === 'video');
+          if (sender) {
+            sender.replaceTrack(newVideoTrack);
+          }
+        });
+      } catch (err) {
+        console.error('Switch camera error:', err);
+        setError('Failed to switch camera.');
       }
     }
   };
@@ -498,24 +473,18 @@ const App = () => {
 
           <div className="video-chat-container">
             <div className="video-container">
-              {localStream && (hasCamera || hasMicrophone) ? (
+              {isHost && localStream ? (
                 <div className="video-card">
                   <h3>{userName} (You)</h3>
                   <div className="video-wrapper">
-                    {hasCamera ? (
-                      <video
-                        ref={localVideoRef}
-                        autoPlay
-                        playsInline
-                        muted
-                        className="video-player"
-                        style={{ transform: isFrontCamera ? 'scaleX(-1)' : 'none' }}
-                      />
-                    ) : (
-                      <div className="video-placeholder">
-                        <p>No camera available</p>
-                      </div>
-                    )}
+                    <video
+                      ref={localVideoRef}
+                      autoPlay
+                      playsInline
+                      muted
+                      className="video-player"
+                      style={{ transform: isFrontCamera ? 'scaleX(-1)' : 'none' }}
+                    />
                     {hasMicrophone && (
                       <div className={`mute-indicator ${isMuted ? 'muted' : ''}`}>
                         <svg className="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -526,12 +495,21 @@ const App = () => {
                   </div>
                 </div>
               ) : (
-                <div className="video-card">
-                  <h3>{userName} (You)</h3>
-                  <div className="video-placeholder">
-                    <p>No camera or microphone</p>
+                !isHost && (
+                  <div className="video-card">
+                    <h3>{userName} (You)</h3>
+                    <div className="video-placeholder">
+                      <p>{hasMicrophone ? 'Audio only' : 'No microphone'}</p>
+                    </div>
+                    {hasMicrophone && (
+                      <div className={`mute-indicator ${isMuted ? 'muted' : ''}`}>
+                        <svg className="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d={isMuted ? 'M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707A1 1 0 0112 5v14a1 1 0 01-1.707.707L5.586 15zM17 9l4 4m0-4l-4 4' : 'M19 11v2a7 7 0 01-7 7m7-9a7 7 0 01-7-7m7 9H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707A1 1 0 0112 5v14a1 1 0 01-1.707.707L5.586 15H4'} />
+                        </svg>
+                      </div>
+                    )}
                   </div>
-                </div>
+                )
               )}
               {Object.entries(remoteStreams).map(([userId, stream]) => (
                 <div key={userId} className="video-card">
@@ -597,7 +575,7 @@ const App = () => {
                 {isMuted ? 'Unmute' : 'Mute'}
               </button>
             )}
-            {(isHost || isViewerStreaming) && hasCamera && (
+            {isHost && isStreaming && (
               <button onClick={switchCamera} className="control-button">
                 <svg className="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
@@ -605,10 +583,10 @@ const App = () => {
                 Switch Camera
               </button>
             )}
-            {isHost ? (
+            {isHost && (
               <>
                 {!isStreaming ? (
-                  <button onClick={startStreaming} className="stream-button start" disabled={!hasCamera}>
+                  <button onClick={startStreaming} className="stream-button start">
                     Start Streaming
                   </button>
                 ) : (
@@ -617,23 +595,6 @@ const App = () => {
                   </button>
                 )}
               </>
-            ) : (
-              !isViewerStreaming && (
-                <button
-                  onClick={requestStreamPermission}
-                  disabled={hasRequestedStream || !hasCamera}
-                  className={`stream-button request ${hasRequestedStream || !hasCamera ? 'disabled' : ''}`}
-                >
-                  {hasRequestedStream ? 'Awaiting Permission...' : (
-                    <>
-                      <svg className="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14m-6 2V8m0 8H6a2 2 0 01-2-2V8a2 2 0 012-2h3" />
-                      </svg>
-                      Request to Stream
-                    </>
-                  )}
-                </button>
-              )
             )}
             <button onClick={leaveRoom} className="leave-button">
               Leave Room
