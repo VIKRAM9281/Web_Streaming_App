@@ -29,10 +29,12 @@ const App = () => {
   const [hostId, setHostId] = useState('');
   const [viewerCount, setViewerCount] = useState(0);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [isViewerStreaming, setIsViewerStreaming] = useState(false);
   const [error, setError] = useState('');
   const [isMuted, setIsMuted] = useState(false);
   const [isFrontCamera, setIsFrontCamera] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [hasRequestedStream, setHasRequestedStream] = useState(false);
   const [localStream, setLocalStream] = useState(null);
   const [remoteStreams, setRemoteStreams] = useState({});
   const [messages, setMessages] = useState([]);
@@ -48,6 +50,7 @@ const App = () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       setLocalStream(stream);
+
       localStreamRef.current = stream;
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
@@ -79,6 +82,7 @@ const App = () => {
       setIsStreaming(isHostStreaming);
       setUsers(users);
       setLoading(false);
+      requestPermissions(); // Automatically request permissions for voice chat
     });
 
     socket.on('room-full', () => {
@@ -225,6 +229,17 @@ const App = () => {
       setMessages(prev => [...prev, { sender, message }]);
     });
 
+    socket.on('stream-permission', ({ allowed }) => {
+      if (allowed) {
+        startStreaming();
+        setHasRequestedStream(false);
+        setIsViewerStreaming(true);
+      } else {
+        setError('Streaming permission denied by host.');
+        setHasRequestedStream(false);
+      }
+    });
+
     return () => {
       socket.removeAllListeners();
     };
@@ -254,11 +269,28 @@ const App = () => {
     socket.emit('join-room', { roomId, userName });
   };
 
+  const requestStreamPermission = () => {
+    socket.emit('stream-request', { roomId, viewerId: socket.id });
+    setHasRequestedStream(true);
+  };
+
   const startStreaming = async () => {
     const stream = await requestPermissions();
     if (!stream) return;
-    setIsStreaming(true);
-    socket.emit('host-streaming', roomId);
+    const peerConnection = new RTCPeerConnection(iceServers);
+    stream.getTracks().forEach(track => {
+      peerConnection.addTrack(track, stream);
+    });
+    peerConnection.onicecandidate = (event) => {
+      if (event.candidate) {
+        socket.emit('ice-candidate', { target: hostId, candidate: event.candidate });
+      }
+    };
+    peerConnections.current[hostId] = peerConnection;
+    if (isHost) {
+      socket.emit('host-streaming', roomId);
+      setIsStreaming(true);
+    }
   };
 
   const stopStreaming = () => {
@@ -270,6 +302,7 @@ const App = () => {
     Object.values(peerConnections.current).forEach(pc => pc.close());
     peerConnections.current = {};
     setIsStreaming(false);
+    setIsViewerStreaming(false);
     socket.emit('stop-streaming', roomId);
   };
 
@@ -277,6 +310,7 @@ const App = () => {
     socket.emit('leave-room');
     setJoined(false);
     setIsStreaming(false);
+    setIsViewerStreaming(false);
     setRoomId('');
     setUserName('');
     setError('');
@@ -292,10 +326,17 @@ const App = () => {
 
   const toggleMute = () => {
     if (localStreamRef.current) {
-      localStreamRef.current.getAudioTracks().forEach(track => {
+      const audioTracks = localStreamRef.current.getAudioTracks();
+      if (audioTracks.length === 0) {
+        setError('No audio input available. Check microphone permissions.');
+        return;
+      }
+      audioTracks.forEach(track => {
         track.enabled = !track.enabled;
       });
       setIsMuted(prev => !prev);
+    } else {
+      setError('No active stream. Please enable microphone first.');
     }
   };
 
@@ -320,6 +361,7 @@ const App = () => {
           setLocalStream(localStreamRef.current);
           if (localVideoRef.current) {
             localVideoRef.current.srcObject = localStreamRef.current;
+            localVideoRef.current.play().catch(err => console.error('Local video play error:', err));
           }
           setIsFrontCamera(prev => !prev);
           Object.values(peerConnections.current).forEach(pc => {
@@ -330,6 +372,7 @@ const App = () => {
           });
         } catch (err) {
           console.error('Switch camera error:', err);
+          setError('Failed to switch camera.');
         }
       }
     }
@@ -402,30 +445,39 @@ const App = () => {
               {localStream && (
                 <div className="video-card">
                   <h3>{userName} (You)</h3>
-                  <video
-                    ref={localVideoRef}
-                    autoPlay
-                    playsInline
-                    muted
-                    className="video-player"
-                    style={{ transform: isFrontCamera ? 'scaleX(-1)' : 'none' }}
-                  />
+                  <div className="video-wrapper">
+                    <video
+                      ref={localVideoRef}
+                      autoPlay
+                      playsInline
+                      muted
+                      className="video-player"
+                      style={{ transform: isFrontCamera ? 'scaleX(-1)' : 'none' }}
+                    />
+                    <div className={`mute-indicator ${isMuted ? 'muted' : ''}`}>
+                      <svg className="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d={isMuted ? 'M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707A1 1 0 0112 5v14a1 1 0 01-1.707.707L5.586 15zM17 9l4 4m0-4l-4 4' : 'M19 11v2a7 7 0 01-7 7m7-9a7 7 0 01-7-7m7 9H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707A1 1 0 0112 5v14a1 1 0 01-1.707.707L5.586 15H4'} />
+                      </svg>
+                    </div>
+                  </div>
                 </div>
               )}
               {Object.entries(remoteStreams).map(([userId, stream]) => (
                 <div key={userId} className="video-card">
                   <h3>{users[userId] || 'Unknown'}</h3>
-                  <video
-                    autoPlay
-                    playsInline
-                    className="video-player"
-                    ref={(video) => {
-                      if (video && stream) {
-                        video.srcObject = stream;
-                        video.play().catch(err => console.error('Video play error:', err));
-                      }
-                    }}
-                  />
+                  <div className="video-wrapper">
+                    <video
+                      autoPlay
+                      playsInline
+                      className="video-player"
+                      ref={(video) => {
+                        if (video && stream) {
+                          video.srcObject = stream;
+                          video.play().catch(err => console.error('Video play error:', err));
+                        }
+                      }}
+                    />
+                  </div>
                 </div>
               ))}
             </div>
@@ -462,13 +514,15 @@ const App = () => {
               </svg>
               {isMuted ? 'Unmute' : 'Mute'}
             </button>
-            <button onClick={switchCamera} className="control-button">
-              <svg className="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-              </svg>
-              Switch Camera
-            </button>
-            {isHost && (
+            {(isHost || isViewerStreaming) && (
+              <button onClick={switchCamera} className="control-button">
+                <svg className="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                </svg>
+                Switch Camera
+              </button>
+            )}
+            {isHost ? (
               <>
                 {!isStreaming ? (
                   <button onClick={startStreaming} className="stream-button start">
@@ -480,6 +534,23 @@ const App = () => {
                   </button>
                 )}
               </>
+            ) : (
+              !isViewerStreaming && (
+                <button
+                  onClick={requestStreamPermission}
+                  disabled={hasRequestedStream}
+                  className={`stream-button request ${hasRequestedStream ? 'disabled' : ''}`}
+                >
+                  {hasRequestedStream ? 'Awaiting Permission...' : (
+                    <>
+                      <svg className="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14m-6 2V8m0 8H6a2 2 0 01-2-2V8a2 2 0 012-2h3" />
+                      </svg>
+                      Request to Stream
+                    </>
+                  )}
+                </button>
+              )
             )}
             <button onClick={leaveRoom} className="leave-button">
               Leave Room
