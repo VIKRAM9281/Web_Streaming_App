@@ -40,27 +40,75 @@ const App = () => {
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
   const [users, setUsers] = useState({});
+  const [hasCamera, setHasCamera] = useState(true);
+  const [hasMicrophone, setHasMicrophone] = useState(true);
+  const [isRequestingPermissions, setIsRequestingPermissions] = useState(false);
 
   const localVideoRef = useRef(null);
   const messageContainerRef = useRef(null);
   const localStreamRef = useRef(null);
   const peerConnections = useRef({});
+  const isPlayingRef = useRef(false);
 
   const requestPermissions = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-      setLocalStream(stream);
+    if (isRequestingPermissions) return localStreamRef.current;
+    setIsRequestingPermissions(true);
 
+    try {
+      // Try to get both video and audio
+      let stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      setLocalStream(stream);
       localStreamRef.current = stream;
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
-        localVideoRef.current.play().catch(err => console.error('Local video play error:', err));
-      }
+      setHasCamera(true);
+      setHasMicrophone(true);
+      await setVideoSource(stream);
       return stream;
     } catch (err) {
-      console.error('Permission error:', err);
-      setError('Camera and microphone permissions are required.');
-      return null;
+      console.error('Initial permission error:', err);
+      if (err.name === 'NotFoundError') {
+        try {
+          // Fallback to audio-only
+          let stream = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
+          setLocalStream(stream);
+          localStreamRef.current = stream;
+          setHasCamera(false);
+          setHasMicrophone(true);
+          setError('No camera found. Joined with audio only.');
+          await setVideoSource(stream);
+          return stream;
+        } catch (audioErr) {
+          console.error('Audio-only permission error:', audioErr);
+          setHasCamera(false);
+          setHasMicrophone(false);
+          setError('No camera or microphone found. You can still use text chat and view streams.');
+          return null;
+        }
+      } else {
+        setError('Camera and microphone permissions are required. Please allow access.');
+        return null;
+      }
+    } finally {
+      setIsRequestingPermissions(false);
+    }
+  };
+
+  const setVideoSource = async (stream) => {
+    if (localVideoRef.current && stream) {
+      localVideoRef.current.srcObject = stream;
+      if (!isPlayingRef.current) {
+        isPlayingRef.current = true;
+        try {
+          await localVideoRef.current.play();
+        } catch (err) {
+          if (err.name === 'AbortError') {
+            console.warn('Video play aborted due to new load request:', err);
+          } else {
+            console.error('Local video play error:', err);
+          }
+        } finally {
+          isPlayingRef.current = false;
+        }
+      }
     }
   };
 
@@ -71,9 +119,10 @@ const App = () => {
       setIsHost(true);
       setHostId(socket.id);
       setLoading(false);
+      requestPermissions();
     });
 
-    socket.on('room-joined', ({ roomId, hostId, viewerCount, isHostStreaming, users }) => {
+    socket.on('room-joined',async ({ roomId, hostId, viewerCount, isHostStreaming, users }) => {
       console.log('Room joined:', roomId);
       setJoined(true);
       setIsHost(false);
@@ -82,7 +131,7 @@ const App = () => {
       setIsStreaming(isHostStreaming);
       setUsers(users);
       setLoading(false);
-      requestPermissions(); // Automatically request permissions for voice chat
+      await requestPermissions();
     });
 
     socket.on('room-full', () => {
@@ -270,16 +319,22 @@ const App = () => {
   };
 
   const requestStreamPermission = () => {
+    if (!hasCamera) {
+      setError('Cannot stream: No camera detected.');
+      return;
+    }
     socket.emit('stream-request', { roomId, viewerId: socket.id });
     setHasRequestedStream(true);
   };
 
   const startStreaming = async () => {
-    const stream = await requestPermissions();
-    if (!stream) return;
+    if (!localStreamRef.current) {
+      const stream = await requestPermissions();
+      if (!stream) return;
+    }
     const peerConnection = new RTCPeerConnection(iceServers);
-    stream.getTracks().forEach(track => {
-      peerConnection.addTrack(track, stream);
+    localStreamRef.current.getTracks().forEach(track => {
+      peerConnection.addTrack(track, localStreamRef.current);
     });
     peerConnection.onicecandidate = (event) => {
       if (event.candidate) {
@@ -320,6 +375,8 @@ const App = () => {
       localStreamRef.current = null;
     }
     setRemoteStreams({});
+    setHasCamera(true);
+    setHasMicrophone(true);
     Object.values(peerConnections.current).forEach(pc => pc.close());
     peerConnections.current = {};
   };
@@ -335,6 +392,8 @@ const App = () => {
         track.enabled = !track.enabled;
       });
       setIsMuted(prev => !prev);
+    } else if (!hasMicrophone) {
+      setError('No microphone detected.');
     } else {
       setError('No active stream. Please enable microphone first.');
     }
@@ -359,10 +418,7 @@ const App = () => {
           localStreamRef.current.removeTrack(videoTrack);
           localStreamRef.current.addTrack(newVideoTrack);
           setLocalStream(localStreamRef.current);
-          if (localVideoRef.current) {
-            localVideoRef.current.srcObject = localStreamRef.current;
-            localVideoRef.current.play().catch(err => console.error('Local video play error:', err));
-          }
+          await setVideoSource(localStreamRef.current);
           setIsFrontCamera(prev => !prev);
           Object.values(peerConnections.current).forEach(pc => {
             const sender = pc.getSenders().find(s => s.track.kind === 'video');
@@ -442,23 +498,38 @@ const App = () => {
 
           <div className="video-chat-container">
             <div className="video-container">
-              {localStream && (
+              {localStream && (hasCamera || hasMicrophone) ? (
                 <div className="video-card">
                   <h3>{userName} (You)</h3>
                   <div className="video-wrapper">
-                    <video
-                      ref={localVideoRef}
-                      autoPlay
-                      playsInline
-                      muted
-                      className="video-player"
-                      style={{ transform: isFrontCamera ? 'scaleX(-1)' : 'none' }}
-                    />
-                    <div className={`mute-indicator ${isMuted ? 'muted' : ''}`}>
-                      <svg className="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d={isMuted ? 'M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707A1 1 0 0112 5v14a1 1 0 01-1.707.707L5.586 15zM17 9l4 4m0-4l-4 4' : 'M19 11v2a7 7 0 01-7 7m7-9a7 7 0 01-7-7m7 9H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707A1 1 0 0112 5v14a1 1 0 01-1.707.707L5.586 15H4'} />
-                      </svg>
-                    </div>
+                    {hasCamera ? (
+                      <video
+                        ref={localVideoRef}
+                        autoPlay
+                        playsInline
+                        muted
+                        className="video-player"
+                        style={{ transform: isFrontCamera ? 'scaleX(-1)' : 'none' }}
+                      />
+                    ) : (
+                      <div className="video-placeholder">
+                        <p>No camera available</p>
+                      </div>
+                    )}
+                    {hasMicrophone && (
+                      <div className={`mute-indicator ${isMuted ? 'muted' : ''}`}>
+                        <svg className="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d={isMuted ? 'M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707A1 1 0 0112 5v14a1 1 0 01-1.707.707L5.586 15zM17 9l4 4m0-4l-4 4' : 'M19 11v2a7 7 0 01-7 7m7-9a7 7 0 01-7-7m7 9H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707A1 1 0 0112 5v14a1 1 0 01-1.707.707L5.586 15H4'} />
+                        </svg>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="video-card">
+                  <h3>{userName} (You)</h3>
+                  <div className="video-placeholder">
+                    <p>No camera or microphone</p>
                   </div>
                 </div>
               )}
@@ -473,7 +544,17 @@ const App = () => {
                       ref={(video) => {
                         if (video && stream) {
                           video.srcObject = stream;
-                          video.play().catch(err => console.error('Video play error:', err));
+                          if (!isPlayingRef.current) {
+                            isPlayingRef.current = true;
+                            video.play().catch(err => {
+                              if (err.name === 'AbortError') {
+                                console.warn('Remote video play aborted:', err);
+                              } else {
+                                console.error('Remote video play error:', err);
+                              }
+                              isPlayingRef.current = false;
+                            });
+                          }
                         }
                       }}
                     />
@@ -508,13 +589,15 @@ const App = () => {
           </div>
 
           <div className="control-buttons">
-            <button onClick={toggleMute} className="control-button">
-              <svg className="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d={isMuted ? 'M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707A1 1 0 0112 5v14a1 1 0 01-1.707.707L5.586 15zM17 9l4 4m0-4l-4 4' : 'M19 11v2a7 7 0 01-7 7m7-9a7 7 0 01-7-7m7 9H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707A1 1 0 0112 5v14a1 1 0 01-1.707.707L5.586 15H4'} />
-              </svg>
-              {isMuted ? 'Unmute' : 'Mute'}
-            </button>
-            {(isHost || isViewerStreaming) && (
+            {hasMicrophone && (
+              <button onClick={toggleMute} className="control-button">
+                <svg className="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d={isMuted ? 'M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707A1 1 0 0112 5v14a1 1 0 01-1.707.707L5.586 15zM17 9l4 4m0-4l-4 4' : 'M19 11v2a7 7 0 01-7 7m7-9a7 7 0 01-7-7m7 9H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707A1 1 0 0112 5v14a1 1 0 01-1.707.707L5.586 15H4'} />
+                </svg>
+                {isMuted ? 'Unmute' : 'Mute'}
+              </button>
+            )}
+            {(isHost || isViewerStreaming) && hasCamera && (
               <button onClick={switchCamera} className="control-button">
                 <svg className="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
@@ -525,7 +608,7 @@ const App = () => {
             {isHost ? (
               <>
                 {!isStreaming ? (
-                  <button onClick={startStreaming} className="stream-button start">
+                  <button onClick={startStreaming} className="stream-button start" disabled={!hasCamera}>
                     Start Streaming
                   </button>
                 ) : (
@@ -538,8 +621,8 @@ const App = () => {
               !isViewerStreaming && (
                 <button
                   onClick={requestStreamPermission}
-                  disabled={hasRequestedStream}
-                  className={`stream-button request ${hasRequestedStream ? 'disabled' : ''}`}
+                  disabled={hasRequestedStream || !hasCamera}
+                  className={`stream-button request ${hasRequestedStream || !hasCamera ? 'disabled' : ''}`}
                 >
                   {hasRequestedStream ? 'Awaiting Permission...' : (
                     <>
