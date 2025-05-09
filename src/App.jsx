@@ -46,6 +46,7 @@ const App = () => {
       localStreamRef.current = stream;
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
+        localVideoRef.current.play().catch(err => console.error('Local video play error:', err));
       }
       return stream;
     } catch (err) {
@@ -54,6 +55,30 @@ const App = () => {
       return null;
     }
   };
+
+  // Sync remoteStream to remoteVideoRef and log track details
+  useEffect(() => {
+    if (remoteStream && remoteVideoRef.current) {
+      console.log('Setting remoteStream to video element:', remoteStream);
+      console.log('Remote stream tracks:', {
+        video: remoteStream.getVideoTracks().map(t => ({
+          id: t.id,
+          enabled: t.enabled,
+          readyState: t.readyState,
+        })),
+        audio: remoteStream.getAudioTracks().map(t => ({
+          id: t.id,
+          enabled: t.enabled,
+          readyState: t.readyState,
+        })),
+      });
+      remoteVideoRef.current.srcObject = remoteStream;
+      remoteVideoRef.current.play().catch(err => {
+        console.error('Remote video play error:', err);
+        setError('Failed to play stream. Check browser permissions or try refreshing.');
+      });
+    }
+  }, [remoteStream]);
 
   useEffect(() => {
     socket.on('room-created', ({ roomId }) => {
@@ -79,9 +104,6 @@ const App = () => {
           const stream = event.streams[0];
           if (stream) {
             setRemoteStream(stream);
-            if (remoteVideoRef.current) {
-              remoteVideoRef.current.srcObject = stream;
-            }
           }
         };
         peerConnection.onicecandidate = (event) => {
@@ -171,9 +193,6 @@ const App = () => {
           const stream = event.streams[0];
           if (stream) {
             setRemoteStream(stream);
-            if (remoteVideoRef.current) {
-              remoteVideoRef.current.srcObject = stream;
-            }
           }
         };
         peerConnection.onicecandidate = (event) => {
@@ -208,9 +227,6 @@ const App = () => {
           const stream = event.streams[0];
           if (stream) {
             setRemoteStream(stream);
-            if (remoteVideoRef.current) {
-              remoteVideoRef.current.srcObject = stream;
-            }
           }
         };
         peerConnection.onicecandidate = (event) => {
@@ -286,6 +302,7 @@ const App = () => {
     return () => {
       socket.removeAllListeners();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isHost, isStreaming, hostId]);
 
   const createRoom = () => {
@@ -402,6 +419,7 @@ const App = () => {
           setLocalStream(localStreamRef.current);
           if (localVideoRef.current) {
             localVideoRef.current.srcObject = localStreamRef.current;
+            localVideoRef.current.play().catch(err => console.error('Local video play error:', err));
           }
           setIsFrontCamera(prev => !prev);
           Object.values(peerConnections.current).forEach(pc => {
