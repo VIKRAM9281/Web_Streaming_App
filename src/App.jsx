@@ -11,18 +11,19 @@ const socket = io('https://streamingbacknedforwebapp.onrender.com', {
 const iceServers = {
   iceServers: [
     {
-      "urls": "stun:stun.relay.metered.ca:80"
+      urls: "stun:stun.relay.metered.ca:80"
     },
     {
-      "urls": "turn:in.relay.metered.ca:80",
-      "username": "92b58ddc6becca9a7458fe50",
-      "credential": "f0VH3WmLtV6ZANec"
+      urls: "turn:in.relay.metered.ca:80",
+      username: "92b58ddc6becca9a7458fe50",
+      credential: "f0VH3WmLtV6ZANec"
     }
   ],
 };
 
 const App = () => {
   const [roomId, setRoomId] = useState('');
+  const [userName, setUserName] = useState('');
   const [joined, setJoined] = useState(false);
   const [isHost, setIsHost] = useState(false);
   const [hostId, setHostId] = useState('');
@@ -32,15 +33,16 @@ const App = () => {
   const [isMuted, setIsMuted] = useState(false);
   const [isFrontCamera, setIsFrontCamera] = useState(true);
   const [loading, setLoading] = useState(false);
-  const [hasRequestedStream, setHasRequestedStream] = useState(false);
   const [localStream, setLocalStream] = useState(null);
-  const [remoteStream, setRemoteStream] = useState(null);
+  const [remoteStreams, setRemoteStreams] = useState({});
+  const [messages, setMessages] = useState([]);
+  const [newMessage, setNewMessage] = useState('');
+  const [users, setUsers] = useState({});
 
   const localVideoRef = useRef(null);
-  const remoteVideoRef = useRef(null);
-  const peerConnections = useRef({});
+  const messageContainerRef = useRef(null);
   const localStreamRef = useRef(null);
-  const peerConnectionRef = useRef(null);
+  const peerConnections = useRef({});
 
   const requestPermissions = async () => {
     try {
@@ -59,30 +61,6 @@ const App = () => {
     }
   };
 
-  // Sync remoteStream to remoteVideoRef and log track details
-  useEffect(() => {
-    if (remoteStream && remoteVideoRef.current) {
-      console.log('Setting remoteStream to video element:', remoteStream);
-      console.log('Remote stream tracks:', {
-        video: remoteStream.getVideoTracks().map(t => ({
-          id: t.id,
-          enabled: t.enabled,
-          readyState: t.readyState,
-        })),
-        audio: remoteStream.getAudioTracks().map(t => ({
-          id: t.id,
-          enabled: t.enabled,
-          readyState: t.readyState,
-        })),
-      });
-      remoteVideoRef.current.srcObject = remoteStream;
-      remoteVideoRef.current.play().catch(err => {
-        console.error('Remote video play error:', err);
-        setError('Failed to play stream. Check browser permissions or try refreshing.');
-      });
-    }
-  }, [remoteStream]);
-
   useEffect(() => {
     socket.on('room-created', ({ roomId }) => {
       console.log('Room created:', roomId);
@@ -92,31 +70,15 @@ const App = () => {
       setLoading(false);
     });
 
-    socket.on('room-joined', ({ roomId, hostId, viewerCount, isHostStreaming }) => {
-      console.log('Room joined:', roomId, 'Host streaming:', isHostStreaming);
+    socket.on('room-joined', ({ roomId, hostId, viewerCount, isHostStreaming, users }) => {
+      console.log('Room joined:', roomId);
       setJoined(true);
       setIsHost(false);
       setHostId(hostId);
       setViewerCount(viewerCount);
       setIsStreaming(isHostStreaming);
+      setUsers(users);
       setLoading(false);
-      if (isHostStreaming) {
-        const peerConnection = new RTCPeerConnection(iceServers);
-        peerConnection.ontrack = (event) => {
-          console.log('Viewer received track:', event.streams);
-          const stream = event.streams[0];
-          if (stream) {
-            setRemoteStream(stream);
-          }
-        };
-        peerConnection.onicecandidate = (event) => {
-          if (event.candidate) {
-            console.log('Viewer sending ICE candidate to host:', hostId);
-            socket.emit('ice-candidate', { target: hostId, candidate: event.candidate });
-          }
-        };
-        peerConnectionRef.current = peerConnection;
-      }
     });
 
     socket.on('room-full', () => {
@@ -134,85 +96,78 @@ const App = () => {
       setLoading(false);
     });
 
-    socket.on('room-info', ({ viewerCount }) => {
+    socket.on('room-info', ({ viewerCount, users }) => {
       setViewerCount(viewerCount);
+      setUsers(users);
     });
 
-    socket.on('user-joined', (viewerId) => {
-      if (!isHost) return;
-      console.log('Host: Viewer joined:', viewerId);
-      if (!localStreamRef.current || !localStreamRef.current.getTracks().length) {
-        console.warn('Host: No local stream available');
-        return;
-      }
-
-      const peerConnection = new RTCPeerConnection(iceServers);
-      localStreamRef.current.getTracks().forEach(track => {
-        console.log('Host: Adding track to peer connection for viewer:', viewerId);
-        peerConnection.addTrack(track, localStreamRef.current);
-      });
-
-      peerConnection.onicecandidate = (event) => {
-        if (event.candidate) {
-          console.log('Host: Sending ICE candidate to viewer:', viewerId);
-          socket.emit('ice-candidate', { target: viewerId, candidate: event.candidate });
-        }
-      };
-
-      peerConnections.current[viewerId] = peerConnection;
-
-      if (isStreaming) {
-        console.log('Host: Sending offer to viewer:', viewerId);
-        setTimeout(async () => {
-          try {
-            const offer = await peerConnection.createOffer({
-              offerToReceiveAudio: false,
-              offerToReceiveVideo: false,
-            });
-            await peerConnection.setLocalDescription(offer);
-            socket.emit('offer', { target: viewerId, sdp: offer });
-          } catch (err) {
-            console.error('Host: Offer creation error:', err);
+    socket.on('user-joined', ({ userId, userName }) => {
+      setUsers(prev => ({ ...prev, [userId]: userName }));
+      if (isHost && localStreamRef.current) {
+        const peerConnection = new RTCPeerConnection(iceServers);
+        localStreamRef.current.getTracks().forEach(track => {
+          peerConnection.addTrack(track, localStreamRef.current);
+        });
+        peerConnection.onicecandidate = (event) => {
+          if (event.candidate) {
+            socket.emit('ice-candidate', { target: userId, candidate: event.candidate });
           }
-        }, 500);
+        };
+        peerConnections.current[userId] = peerConnection;
+        if (isStreaming) {
+          setTimeout(async () => {
+            try {
+              const offer = await peerConnection.createOffer({
+                offerToReceiveAudio: true,
+                offerToReceiveVideo: true,
+              });
+              await peerConnection.setLocalDescription(offer);
+              socket.emit('offer', { target: userId, sdp: offer });
+            } catch (err) {
+              console.error('Offer creation error:', err);
+            }
+          }, 500);
+        }
       }
     });
 
-    socket.on('user-left', (viewerId) => {
-      if (peerConnections.current[viewerId]) {
-        peerConnections.current[viewerId].close();
-        delete peerConnections.current[viewerId];
-        console.log('Viewer left:', viewerId);
+    socket.on('user-left', (userId) => {
+      if (peerConnections.current[userId]) {
+        peerConnections.current[userId].close();
+        delete peerConnections.current[userId];
       }
+      setUsers(prev => {
+        const newUsers = { ...prev };
+        delete newUsers[userId];
+        return newUsers;
+      });
+      setRemoteStreams(prev => {
+        const newStreams = { ...prev };
+        delete newStreams[userId];
+        return newStreams;
+      });
     });
 
     socket.on('host-started-streaming', () => {
-      console.log('Viewer: Host started streaming');
       setIsStreaming(true);
-      if (!peerConnectionRef.current) {
-        const peerConnection = new RTCPeerConnection(iceServers);
-        peerConnection.ontrack = (event) => {
-          console.log('Viewer: Received track after host started streaming');
-          const stream = event.streams[0];
-          if (stream) {
-            setRemoteStream(stream);
-          }
-        };
-        peerConnection.onicecandidate = (event) => {
-          if (event.candidate) {
-            socket.emit('ice-candidate', { target: hostId, candidate: event.candidate });
-          }
-        };
-        peerConnectionRef.current = peerConnection;
-      }
+      const peerConnection = new RTCPeerConnection(iceServers);
+      peerConnection.ontrack = (event) => {
+        const stream = event.streams[0];
+        setRemoteStreams(prev => ({ ...prev, [hostId]: stream }));
+      };
+      peerConnection.onicecandidate = (event) => {
+        if (event.candidate) {
+          socket.emit('ice-candidate', { target: hostId, candidate: event.candidate });
+        }
+      };
+      peerConnections.current[hostId] = peerConnection;
     });
 
     socket.on('ice-candidate', async ({ candidate, sender }) => {
-      const pc = peerConnections.current[sender] || peerConnectionRef.current;
+      const pc = peerConnections.current[sender];
       if (pc && candidate) {
         try {
           await pc.addIceCandidate(new RTCIceCandidate(candidate));
-          console.log('Added ICE candidate from:', sender);
         } catch (err) {
           console.error('ICE candidate error:', err);
         }
@@ -220,33 +175,24 @@ const App = () => {
     });
 
     socket.on('offer', async ({ sdp, sender }) => {
-      if (isHost) return;
-      console.log('Viewer: Received offer from host:', sender);
-      let peerConnection = peerConnectionRef.current;
-      if (!peerConnection) {
-        peerConnection = new RTCPeerConnection(iceServers);
-        peerConnection.ontrack = (event) => {
-          console.log('Viewer: Received track from offer');
-          const stream = event.streams[0];
-          if (stream) {
-            setRemoteStream(stream);
-          }
-        };
-        peerConnection.onicecandidate = (event) => {
-          if (event.candidate) {
-            socket.emit('ice-candidate', { target: sender, candidate: event.candidate });
-          }
-        };
-        peerConnectionRef.current = peerConnection;
-      }
+      const peerConnection = new RTCPeerConnection(iceServers);
+      peerConnection.ontrack = (event) => {
+        const stream = event.streams[0];
+        setRemoteStreams(prev => ({ ...prev, [sender]: stream }));
+      };
+      peerConnection.onicecandidate = (event) => {
+        if (event.candidate) {
+          socket.emit('ice-candidate', { target: sender, candidate: event.candidate });
+        }
+      };
+      peerConnections.current[sender] = peerConnection;
       try {
         await peerConnection.setRemoteDescription(new RTCSessionDescription(sdp));
         const answer = await peerConnection.createAnswer();
         await peerConnection.setLocalDescription(answer);
         socket.emit('answer', { target: sender, sdp: answer });
-        console.log('Viewer: Sent answer to host:', sender);
       } catch (err) {
-        console.error('Viewer: Offer handling error:', err);
+        console.error('Offer handling error:', err);
       }
     });
 
@@ -255,9 +201,8 @@ const App = () => {
       if (pc) {
         try {
           await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-          console.log('Host: Received answer from viewer:', sender);
         } catch (err) {
-          console.error('Host: Answer handling error:', err);
+          console.error('Answer handling error:', err);
         }
       }
     });
@@ -266,98 +211,57 @@ const App = () => {
       setError('Host has left the room.');
       setJoined(false);
       setIsStreaming(false);
-      setRemoteStream(null);
-      if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = null;
-      }
+      setRemoteStreams({});
     });
 
     socket.on('room-closed', () => {
       setError('Room has been closed.');
       setJoined(false);
       setIsStreaming(false);
-      setRemoteStream(null);
-      if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = null;
-      }
+      setRemoteStreams({});
     });
 
-    socket.on('stream-request', ({ viewerId }) => {
-      if (isHost) {
-        if (window.confirm(`Viewer ${viewerId} wants to stream. Allow?`)) {
-          socket.emit('stream-permission', { viewerId, allowed: true });
-        } else {
-          socket.emit('stream-permission', { viewerId, allowed: false });
-        }
-      }
-    });
-
-    socket.on('stream-permission', ({ allowed }) => {
-      if (allowed) {
-        startStreaming();
-        setHasRequestedStream(false);
-      } else {
-        setError('Streaming permission denied by host.');
-        setHasRequestedStream(false);
-      }
+    socket.on('new-message', ({ sender, message }) => {
+      setMessages(prev => [...prev, { sender, message }]);
     });
 
     return () => {
       socket.removeAllListeners();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isHost, isStreaming, hostId]);
 
+  useEffect(() => {
+    if (messageContainerRef.current) {
+      messageContainerRef.current.scrollTop = messageContainerRef.current.scrollHeight;
+    }
+  }, [messages]);
+
   const createRoom = () => {
-    if (roomId.trim() === '') {
-      setError('Please enter a room ID.');
+    if (roomId.trim() === '' || userName.trim() === '') {
+      setError('Please enter a room ID and your name.');
       return;
     }
     setLoading(true);
-    socket.emit('create-room', roomId);
+    socket.emit('create-room', { roomId, userName });
   };
 
   const joinRoom = () => {
-    if (roomId.trim() === '') {
-      setError('Please enter a room ID.');
+    if (roomId.trim() === '' || userName.trim() === '') {
+      setError('Please enter a room ID and your name.');
       return;
     }
     setLoading(true);
-    socket.emit('join-room', roomId);
-  };
-
-  const requestStreamPermission = () => {
-    socket.emit('stream-request', { roomId, viewerId: socket.id });
-    setHasRequestedStream(true);
+    socket.emit('join-room', { roomId, userName });
   };
 
   const startStreaming = async () => {
-    try {
-      const stream = await requestPermissions();
-      if (!stream) return;
-      const peerConnection = new RTCPeerConnection(iceServers);
-      stream.getTracks().forEach(track => {
-        peerConnection.addTrack(track, stream);
-      });
-      peerConnection.onicecandidate = (event) => {
-        if (event.candidate) {
-          console.log('Host: ICE candidate generated');
-        }
-      };
-      peerConnectionRef.current = peerConnection;
-      socket.emit('host-streaming', roomId);
-      setIsStreaming(true);
-    } catch (err) {
-      console.error('Streaming error:', err);
-      setError('Failed to start streaming.');
-    }
+    const stream = await requestPermissions();
+    if (!stream) return;
+    setIsStreaming(true);
+    socket.emit('host-streaming', roomId);
   };
 
   const stopStreaming = () => {
-    if (peerConnectionRef.current) {
-      peerConnectionRef.current.close();
-      peerConnectionRef.current = null;
-    }
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach(track => track.stop());
       setLocalStream(null);
@@ -374,20 +278,14 @@ const App = () => {
     setJoined(false);
     setIsStreaming(false);
     setRoomId('');
-    setHasRequestedStream(false);
+    setUserName('');
     setError('');
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach(track => track.stop());
       setLocalStream(null);
       localStreamRef.current = null;
     }
-    if (remoteStream) {
-      remoteStream.getTracks().forEach(track => track.stop());
-      setRemoteStream(null);
-    }
-    if (remoteVideoRef.current) {
-      remoteVideoRef.current.srcObject = null;
-    }
+    setRemoteStreams({});
     Object.values(peerConnections.current).forEach(pc => pc.close());
     peerConnections.current = {};
   };
@@ -422,7 +320,6 @@ const App = () => {
           setLocalStream(localStreamRef.current);
           if (localVideoRef.current) {
             localVideoRef.current.srcObject = localStreamRef.current;
-            localVideoRef.current.play().catch(err => console.error('Local video play error:', err));
           }
           setIsFrontCamera(prev => !prev);
           Object.values(peerConnections.current).forEach(pc => {
@@ -431,16 +328,18 @@ const App = () => {
               sender.replaceTrack(newVideoTrack);
             }
           });
-          if (peerConnectionRef.current) {
-            const sender = peerConnectionRef.current.getSenders().find(s => s.track.kind === 'video');
-            if (sender) {
-              sender.replaceTrack(newVideoTrack);
-            }
-          }
         } catch (err) {
           console.error('Switch camera error:', err);
         }
       }
+    }
+  };
+
+  const sendMessage = (e) => {
+    e.preventDefault();
+    if (newMessage.trim()) {
+      socket.emit('send-message', newMessage);
+      setNewMessage('');
     }
   };
 
@@ -452,6 +351,13 @@ const App = () => {
 
       {!joined ? (
         <div className="join-card">
+          <input
+            type="text"
+            placeholder="Enter Your Name"
+            value={userName}
+            onChange={(e) => setUserName(e.target.value)}
+            className="room-input"
+          />
           <input
             type="text"
             placeholder="Enter Room ID"
@@ -484,16 +390,18 @@ const App = () => {
             <div className="info-section">
               <p>Room ID: <span className="highlight">{roomId}</span></p>
               <p>Role: <span className="highlight">{isHost ? 'Host' : 'Viewer'}</span></p>
+              <p>Name: <span className="highlight">{userName}</span></p>
             </div>
             <p className="viewer-count">
               <span role="img" aria-label="eye">👁️</span> Viewers: <span className="highlight">{viewerCount}</span>
             </p>
           </div>
 
-          {isHost && (
-            <div className="stream-card">
-              {localStream ? (
-                <div className="video-container">
+          <div className="video-chat-container">
+            <div className="video-container">
+              {localStream && (
+                <div className="video-card">
+                  <h3>{userName} (You)</h3>
                   <video
                     ref={localVideoRef}
                     autoPlay
@@ -502,120 +410,81 @@ const App = () => {
                     className="video-player"
                     style={{ transform: isFrontCamera ? 'scaleX(-1)' : 'none' }}
                   />
-                  {isStreaming && (
-                    <div className="streaming-indicator">
-                      <span className="pulse-dot"></span> Streaming Live
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div className="video-placeholder">
-                  <p>Camera not active</p>
                 </div>
               )}
-              <div className="control-buttons">
-                <button onClick={toggleMute} className="control-button">
-                  <svg className="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d={isMuted ? 'M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707A1 1 0 0112 5v14a1 1 0 01-1.707.707L5.586 15zM17 9l4 4m0-4l-4 4' : 'M19 11v2a7 7 0 01-7 7m7-9a7 7 0 01-7-7m7 9H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707A1 1 0 0112 5v14a1 1 0 01-1.707.707L5.586 15H4'} />
-                  </svg>
-                  {isMuted ? 'Unmute' : 'Mute'}
-                </button>
-                <button onClick={switchCamera} className="control-button">
-                  <svg className="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                  </svg>
-                  Switch Camera
-                </button>
+              {Object.entries(remoteStreams).map(([userId, stream]) => (
+                <div key={userId} className="video-card">
+                  <h3>{users[userId] || 'Unknown'}</h3>
+                  <video
+                    autoPlay
+                    playsInline
+                    className="video-player"
+                    ref={(video) => {
+                      if (video && stream) {
+                        video.srcObject = stream;
+                        video.play().catch(err => console.error('Video play error:', err));
+                      }
+                    }}
+                  />
+                </div>
+              ))}
+            </div>
+
+            <div className="chat-container">
+              <div className="chat-header">Chat</div>
+              <div className="message-container" ref={messageContainerRef}>
+                {messages.map((msg, index) => (
+                  <div key={index} className={`message ${msg.sender === socket.id ? 'sent' : 'received'}`}>
+                    <span className="sender">{users[msg.sender] || 'Unknown'}: </span>
+                    <span>{msg.message}</span>
+                  </div>
+                ))}
               </div>
-              <div className="stream-buttons">
+              <form onSubmit={sendMessage} className="message-form">
+                <input
+                  type="text"
+                  value={newMessage}
+                  onChange={(e) => setNewMessage(e.target.value)}
+                  placeholder="Type a message..."
+                  className="message-input"
+                />
+                <button type="submit" className="send-button">
+                  Send
+                </button>
+              </form>
+            </div>
+          </div>
+
+          <div className="control-buttons">
+            <button onClick={toggleMute} className="control-button">
+              <svg className="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d={isMuted ? 'M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707A1 1 0 0112 5v14a1 1 0 01-1.707.707L5.586 15zM17 9l4 4m0-4l-4 4' : 'M19 11v2a7 7 0 01-7 7m7-9a7 7 0 01-7-7m7 9H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707A1 1 0 0112 5v14a1 1 0 01-1.707.707L5.586 15H4'} />
+              </svg>
+              {isMuted ? 'Unmute' : 'Mute'}
+            </button>
+            <button onClick={switchCamera} className="control-button">
+              <svg className="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+              </svg>
+              Switch Camera
+            </button>
+            {isHost && (
+              <>
                 {!isStreaming ? (
                   <button onClick={startStreaming} className="stream-button start">
-                    <svg className="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14m-6 2V8m0 8H6a2 2 0 01-2-2V8a2 2 0 012-2h3" />
-                    </svg>
                     Start Streaming
                   </button>
                 ) : (
                   <button onClick={stopStreaming} className="stream-button stop">
-                    <svg className="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
-                    </svg>
                     Stop Streaming
                   </button>
                 )}
-              </div>
-            </div>
-          )}
-
-          {!isHost && (
-            <div className="stream-card">
-              {isStreaming && remoteStream ? (
-                <>
-                  <video
-                    ref={remoteVideoRef}
-                    autoPlay
-                    playsInline
-                    className="video-player"
-                  />
-                  <p className="status-text">
-                    <span role="img" aria-label="satellite">📡</span> Watching stream...
-                  </p>
-                </>
-              ) : localStream ? (
-                <video
-                  ref={localVideoRef}
-                  autoPlay
-                  playsInline
-                  muted
-                  className="video-player"
-                  style={{ transform: isFrontCamera ? 'scaleX(-1)' : 'none' }}
-                />
-              ) : (
-                <div className="video-placeholder">
-                  <p>Camera not active</p>
-                </div>
-              )}
-              {!isStreaming && (
-                <button
-                  onClick={requestStreamPermission}
-                  disabled={hasRequestedStream}
-                  className={`stream-button request ${hasRequestedStream ? 'disabled' : ''}`}
-                >
-                  {hasRequestedStream ? 'Awaiting Permission...' : (
-                    <>
-                      <svg className="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14m-6 2V8m0 8H6a2 2 0 01-2-2V8a2 2 0 012-2h3" />
-                      </svg>
-                      Request to Stream
-                    </>
-                  )}
-                </button>
-              )}
-              {localStream && (
-                <div className="control-buttons">
-                  <button onClick={toggleMute} className="control-button">
-                    <svg className="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d={isMuted ? 'M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707A1 1 0 0112 5v14a1 1 0 01-1.707.707L5.586 15zM17 9l4 4m0-4l-4 4' : 'M19 11v2a7 7 0 01-7 7m7-9a7 7 0 01-7-7m7 9H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707A1 1 0 0112 5v14a1 1 0 01-1.707.707L5.586 15H4'} />
-                    </svg>
-                    {isMuted ? 'Unmute' : 'Mute'}
-                  </button>
-                  <button onClick={switchCamera} className="control-button">
-                    <svg className="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                    </svg>
-                    Switch Camera
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-
-          <button onClick={leaveRoom} className="leave-button">
-            <svg className="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-            </svg>
-            Leave Room
-          </button>
+              </>
+            )}
+            <button onClick={leaveRoom} className="leave-button">
+              Leave Room
+            </button>
+          </div>
         </div>
       )}
     </div>
