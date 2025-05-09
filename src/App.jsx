@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import io from 'socket.io-client';
 import './App.css';
 
-const socket = io('https://streamingbackend-eh65.onrender.com', {
+const socket = io('https://streamingbacknedforwebapp.onrender.com', {
   reconnection: true,
   reconnectionAttempts: Infinity,
   reconnectionDelay: 1000,
@@ -11,10 +11,13 @@ const socket = io('https://streamingbackend-eh65.onrender.com', {
 const iceServers = {
   iceServers: [
     {
-      urls: 'turn:coturn.streamalong.live:3478?transport=udp',
-      username: 'vikram',
-      credential: 'vikram',
+      "urls": "stun:stun.relay.metered.ca:80"
     },
+    {
+      "urls": "turn:in.relay.metered.ca:80",
+      "username": "92b58ddc6becca9a7458fe50",
+      "credential": "f0VH3WmLtV6ZANec"
+    }
   ],
 };
 
