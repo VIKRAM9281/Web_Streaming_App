@@ -485,13 +485,6 @@ const App = () => {
                       className="video-player"
                       style={{ transform: isFrontCamera ? 'scaleX(-1)' : 'none' }}
                     />
-                    {hasMicrophone && (
-                      <div className={`mute-indicator ${isMuted ? 'muted' : ''}`}>
-                        <svg className="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d={isMuted ? 'M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707A1 1 0 0112 5v14a1 1 0 01-1.707.707L5.586 15zM17 9l4 4m0-4l-4 4' : 'M19 11v2a7 7 0 01-7 7m7-9a7 7 0 01-7-7m7 9H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707A1 1 0 0112 5v14a1 1 0 01-1.707.707L5.586 15H4'} />
-                        </svg>
-                      </div>
-                    )}
                   </div>
                 </div>
               ) : (
@@ -501,13 +494,6 @@ const App = () => {
                     <div className="video-placeholder">
                       <p>{hasMicrophone ? 'Audio only' : 'No microphone'}</p>
                     </div>
-                    {hasMicrophone && (
-                      <div className={`mute-indicator ${isMuted ? 'muted' : ''}`}>
-                        <svg className="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d={isMuted ? 'M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707A1 1 0 0112 5v14a1 1 0 01-1.707.707L5.586 15zM17 9l4 4m0-4l-4 4' : 'M19 11v2a7 7 0 01-7 7m7-9a7 7 0 01-7-7m7 9H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707A1 1 0 0112 5v14a1 1 0 01-1.707.707L5.586 15H4'} />
-                        </svg>
-                      </div>
-                    )}
                   </div>
                 )
               )}
