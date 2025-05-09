@@ -431,14 +431,21 @@ input{
 }
 
 .message.sent {
-  background: #007bff;
-  color: white;
-  margin-left: 20%;
+  float: right;
+  background: #1a772a;
+  padding: 4px 14px 4px 10px;
+  color: #fff;
+  margin-bottom: 5px;
+  border-radius: 12px 0px 10px 2px !important;
 }
 
 .message.received {
-  background: #199749;
-  margin-right: 20%;
+  float: left;
+  padding: 4px 14px 4px 4px;
+  background: #31363b;
+  color: #ffffff;
+  margin-bottom: 5px;
+  border-radius: 0px 15px 1px 9px !important;
 }
 @media (max-width: 768px) {
   .app-container {

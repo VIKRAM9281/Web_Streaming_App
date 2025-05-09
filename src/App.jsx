@@ -487,16 +487,7 @@ const App = () => {
                     />
                   </div>
                 </div>
-              ) : (
-                !isHost && (
-                  <div className="video-card">
-                    <h3>{userName} (You)</h3>
-                    <div className="video-placeholder">
-                      <p>{hasMicrophone ? 'Audio only' : 'No microphone'}</p>
-                    </div>
-                  </div>
-                )
-              )}
+              ) :null}
               {Object.entries(remoteStreams).map(([userId, stream]) => (
                 <div key={userId} className="video-card">
                   <h3>{users[userId] || 'Unknown'}</h3>
@@ -531,9 +522,11 @@ const App = () => {
               <div className="chat-header">Chat</div>
               <div className="message-container" ref={messageContainerRef}>
                 {messages.map((msg, index) => (
-                  <div key={index} className={`message ${msg.sender === socket.id ? 'sent' : 'received'}`}>
+                  <div key={index} style={{height:'35px'}}>
+                    <div className={`message ${msg.sender === socket.id ? 'sent' : 'received'}`}>
                     <span className="sender">{users[msg.sender] || 'Unknown'}: </span>
                     <span>{msg.message}</span>
+                    </div>
                   </div>
                 ))}
               </div>
