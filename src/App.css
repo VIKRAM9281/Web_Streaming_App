@@ -3,7 +3,9 @@
   padding: 0;
   box-sizing: border-box;
 }
-
+#root{
+  width: 100% !important;
+}
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   background: linear-gradient(to bottom, #e6f0ff, #f0f4f8);
